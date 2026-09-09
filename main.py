@@ -3,15 +3,21 @@ import ccxt
 import pandas as pd
 from supabase import create_client
 
+# Configuración de Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
 SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
+# Configuración de Binance (evitando bloqueos de IP en llamadas de datos públicos)
 exchange = ccxt.binance({
     'apiKey': os.environ.get("BINANCE_TESTNET_KEY", ""),
     'secret': os.environ.get("BINANCE_TESTNET_SECRET", ""),
     'enableRateLimit': True,
+    'options': {
+        'fetchBalance': False,
+        'adjustForTimeDifference': True,
+    },
     'urls': {
         'api': {
             'public': 'https://api.binance.com/api/v3',
@@ -25,66 +31,55 @@ RESERVA_SERVIDORES = 20.0
 
 def obtener_capital_operable():
     if not supabase:
-        return 100.0 - RESERVA_SERVIDORES
-    res = supabase.table('depositos').select('monto').execute()
-    total_depositado = sum(item['monto'] for item in res.data) if res.data else 100.0
-    return max(total_depositado - RESERVA_SERVIDORES, 0.0)
+        return 0.0
+    try:
+        res = supabase.table('depositos').select('monto').execute()
+        monto_total = sum(item['monto'] for item in res.data) if res.data else 0.0
+        return max(0.0, monto_total - RESERVA_SERVIDORES)
+    except Exception as e:
+        print(f"Error al obtener capital desde Supabase: {e}")
+        return 0.0
 
-def escanear_mejores_oportunidades():
-    mejores = []
-    for simbolo in ACTIVOS:
-        try:
-            bars = exchange.fetch_ohlcv(simbolo, timeframe='1h', limit=50)
-            df = pd.DataFrame(bars, columns=['time', 'open', 'high', 'low', 'close', 'volume'])
-            df['ema_200'] = df['close'].ewm(span=200, adjust=False).mean()
-            precio_actual = df.iloc[-1]['close']
-            ema_actual = df.iloc[-1]['ema_200']
-            
-            if precio_actual > ema_actual:
-                score = (precio_actual - ema_actual) / ema_actual * 100
-                mejores.append({'simbolo': simbolo, 'precio': precio_actual, 'score': score})
-        except Exception as e:
-            print(f"Error analizando {simbolo}: {e}")
-            
-    mejores.sort(key=lambda x: x['score'], reverse=True)
-    return mejores[0] if mejores else None
-
-def ejecutar_orden(oportunidad, capital):
-    simbolo = oportunidad['simbolo']
-    precio = oportunidad['precio']
-    riesgo_max = capital * 0.02
-    stop_loss = precio * 0.99
-    take_profit = precio * 1.02
-    distancia_sl = precio - stop_loss
-    cantidad = riesgo_max / distancia_sl
-    
-    print(f"🚀 Ejecutando compra de {cantidad:.4f} {simbolo} a {precio} USDT")
-    
-    if supabase:
-        supabase.table('operaciones').insert({
-            'simbolo': simbolo,
-            'tipo_orden': 'COMPRA',
-            'precio_entrada': precio,
-            'cantidad': cantidad,
-            'stop_loss': stop_loss,
-            'take_profit': take_profit,
-            'score_entrada': oportunidad['score']
-        }).execute()
+def analizar_mercado(simbolo):
+    try:
+        ohlcv = exchange.fetch_ohlcv(simbolo, timeframe='1h', limit=50)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        # Estrategia de análisis básica
+        df['sma_short'] = df['close'].rolling(window=9).mean()
+        df['sma_long'] = df['close'].rolling(window=21).mean()
+        
+        # Últimos valores
+        ultima_corta = df['sma_short'].iloc[-1]
+        ultima_larga = df['sma_long'].iloc[-1]
+        penultima_corta = df['sma_short'].iloc[-2]
+        penultima_larga = df['sma_long'].iloc[-2]
+        
+        # Cruce alcista
+        if penultima_corta <= penultima_larga and ultima_corta > ultima_larga:
+            return "BUY"
+        return "HOLD"
+    except Exception as e:
+        print(f"Error analizando {simbolo}: {e}")
+        return "ERROR"
 
 def iniciar_bot():
     print("🤖 Bot de Trading Autosostenible Iniciado...")
     capital = obtener_capital_operable()
     print(f"💰 Capital operable: {capital:.2f} €")
     
-    if capital < 10.0:
-        print("⚠️ Capital insuficiente para operar.")
-        return
+    entradas_encontradas = 0
+    for simbolo in ACTIVOS:
+        senal = analizar_mercado(simbolo)
+        if senal == "BUY":
+            print(f"🚀 Señal de COMPRA detectada en {simbolo}")
+            entradas_encontradas += 1
+            
+    if entradas_encontradas == 0:
+        print("🔍 No se encontraron entradas de alta probabilidad.")
 
-    oportunidad = escanear_mejores_oportunidades()
-    if oportunidad:
-        print(f"🎯 Oportunidad detectada: {oportunidad['simbolo']} (Score: {oportunidad['score']:.2f})")
-        ejecutar_orden(oportunidad, capital)
-    else:
+if __name__ == "__main__":
+    iniciar_bot()
         print("🔍 No se encontraron entradas de alta probabilidad.")
 
 if __name__ == "__main__":
