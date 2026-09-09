@@ -12,8 +12,13 @@ exchange = ccxt.binance({
     'apiKey': os.environ.get("BINANCE_TESTNET_KEY", ""),
     'secret': os.environ.get("BINANCE_TESTNET_SECRET", ""),
     'enableRateLimit': True,
+    'urls': {
+        'api': {
+            'public': 'https://api.binance.com/api/v3',
+            'private': 'https://testnet.binance.vision/api/v3',
+        }
+    }
 })
-exchange.set_sandbox_mode(True)
 
 ACTIVOS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
 RESERVA_SERVIDORES = 20.0
