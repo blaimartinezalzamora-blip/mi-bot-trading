@@ -1,0 +1,4 @@
+ccxt==4.2.15
+pandas==2.2.0
+supabase==2.3.0
+optuna==3.5.0
