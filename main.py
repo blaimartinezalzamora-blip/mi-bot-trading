@@ -100,8 +100,13 @@ def ejecutar_compra_testnet(simbolo, asignacion_usdt):
         exchange = obtener_exchange_privado()
         simbolo_ccxt = simbolo.replace("USDT", "/USDT")
         
-        orden = exchange.create_market_buy_order_requires_price(simbolo_ccxt, asignacion_usdt)
-        print(f"✅ ORDEN EJECUTADA EN TESTNET: {orden['id']} | {simbolo_ccxt}")
+        # Sintaxis estándar de CCXT para compra a mercado especificando monto en USDT
+        orden = exchange.create_market_buy_order(
+            symbol=simbolo_ccxt,
+            amount=None,
+            params={'quoteOrderQty': asignacion_usdt}
+        )
+        print(f"✅ ORDEN EJECUTADA EN TESTNET: {orden.get('id', 'N/A')} | {simbolo_ccxt}")
         
         precio_ejecucion = orden.get('price', 0.0)
         cantidad = orden.get('filled', 0.0)
