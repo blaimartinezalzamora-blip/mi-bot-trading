@@ -9,14 +9,16 @@ SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
-# Cliente PÚBLICO para lectura de mercado (sin credenciales, evita error 451)
+# Cliente PÚBLICO para lectura de mercado (sin credenciales y sin carga de mercados previa)
 exchange_publico = ccxt.binance({
     'enableRateLimit': True,
     'options': {
         'defaultType': 'spot',
         'adjustForTimeDifference': True,
+        'warnOnFetchOpenOrdersWithoutSymbol': False,
     }
 })
+exchange_publico.has['fetchMarkets'] = False
 
 # Cliente PRIVADO solo para ejecución en Testnet
 def obtener_exchange_privado():
@@ -48,7 +50,7 @@ def obtener_capital_operable():
 
 def analizar_mercado(simbolo):
     try:
-        # Usa el cliente público libre de restricciones
+        # Petición directa de velas sin pasar por exchangeInfo
         ohlcv = exchange_publico.fetch_ohlcv(simbolo, timeframe='1h', limit=50)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
