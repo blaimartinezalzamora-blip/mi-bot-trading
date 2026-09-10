@@ -1,7 +1,8 @@
 import os
-import ccxt
+import requests
 import pandas as pd
 from supabase import create_client
+import ccxt
 
 # Configuración de Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -9,18 +10,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
-# Cliente PÚBLICO para lectura de mercado (sin credenciales y sin carga de mercados previa)
-exchange_publico = ccxt.binance({
-    'enableRateLimit': True,
-    'options': {
-        'defaultType': 'spot',
-        'adjustForTimeDifference': True,
-        'warnOnFetchOpenOrdersWithoutSymbol': False,
-    }
-})
-exchange_publico.has['fetchMarkets'] = False
-
-# Cliente PRIVADO solo para ejecución en Testnet
+# Cliente PRIVADO solo para cuando haya que ejecutar órdenes en Testnet
 def obtener_exchange_privado():
     exchange = ccxt.binance({
         'apiKey': os.environ.get("BINANCE_TESTNET_KEY", ""),
@@ -34,7 +24,7 @@ def obtener_exchange_privado():
     exchange.set_sandbox_mode(True)
     return exchange
 
-ACTIVOS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
+ACTIVOS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 RESERVA_SERVIDORES = 20.0
 
 def obtener_capital_operable():
@@ -48,10 +38,50 @@ def obtener_capital_operable():
         print(f"Error al obtener capital desde Supabase: {e}")
         return 0.0
 
+def obtener_velas_directas(simbolo):
+    # Petición HTTP directa omitiendo librerías intermedias
+    url = f"https://api.binance.com/api/v3/klines?symbol={simbolo}&interval=1h&limit=50"
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+    }
+    response = requests.get(url, headers=headers, timeout=10)
+    
+    if response.status_code == 451:
+        # Si la IP del servidor sigue bloqueada por la API de Binance, usamos CoinGecko/Alternative API como respaldo
+        return obtener_velas_respaldo(simbolo)
+        
+    response.raise_for_status()
+    data = response.json()
+    
+    # Formatear datos a lista de precios de cierre
+    ohlcv = []
+    for item in data:
+        ohlcv.append([
+            item[0],           # timestamp
+            float(item[1]),    # open
+            float(item[2]),    # high
+            float(item[3]),    # low
+            float(item[4]),    # close
+            float(item[5])     # volume
+        ])
+    return ohlcv
+
+def obtener_velas_respaldo(simbolo):
+    # Endpoint alternativo libre de geobloqueos
+    coin_map = {'BTCUSDT': 'bitcoin', 'ETHUSDT': 'ethereum', 'SOLUSDT': 'solana'}
+    coin_id = coin_map.get(simbolo, 'bitcoin')
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=2"
+    res = requests.get(url, timeout=10)
+    res.raise_for_status()
+    prices = res.json().get('prices', [])
+    
+    # Adaptar estructura a DataFrame
+    ohlcv = [[p[0], p[1], p[1], p[1], p[1], 0] for p in prices[-50:]]
+    return ohlcv
+
 def analizar_mercado(simbolo):
     try:
-        # Petición directa de velas sin pasar por exchangeInfo
-        ohlcv = exchange_publico.fetch_ohlcv(simbolo, timeframe='1h', limit=50)
+        ohlcv = obtener_velas_directas(simbolo)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
         # Estrategia de análisis básica
