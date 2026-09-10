@@ -26,7 +26,7 @@ def obtener_exchange_privado():
 
 ACTIVOS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 RESERVA_SERVIDORES = 20.0
-PORCENTAJE_POR_OPERACION = 0.10  # Usa el 10% del capital operable por señal
+PORCENTAJE_POR_OPERACION = 0.10  # 10% del capital disponible por entrada
 
 def obtener_capital_operable():
     if not supabase:
@@ -40,36 +40,24 @@ def obtener_capital_operable():
         return 0.0
 
 def obtener_velas_directas(simbolo):
-    url = f"https://api.binance.com/api/v3/klines?symbol={simbolo}&interval=1h&limit=50"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    response = requests.get(url, headers=headers, timeout=10)
-    
-    if response.status_code == 451:
-        return obtener_velas_respaldo(simbolo)
-        
-    response.raise_for_status()
-    data = response.json()
-    
-    ohlcv = []
-    for item in data:
-        ohlcv.append([
-            item[0],
-            float(item[1]),
-            float(item[2]),
-            float(item[3]),
-            float(item[4]),
-            float(item[5])
-        ])
-    return ohlcv
+    # Intenta Binance US primero (sin geobloqueo en EE. UU.)
+    try:
+        url = f"https://api.binance.us/api/v3/klines?symbol={simbolo}&interval=1h&limit=50"
+        res = requests.get(url, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            return [[item[0], float(item[1]), float(item[2]), float(item[3]), float(item[4]), float(item[5])] for item in data]
+    except Exception:
+        pass
 
-def obtener_velas_respaldo(simbolo):
-    coin_map = {'BTCUSDT': 'bitcoin', 'ETHUSDT': 'ethereum', 'SOLUSDT': 'solana'}
-    coin_id = coin_map.get(simbolo, 'bitcoin')
-    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart?vs_currency=usd&days=2"
-    res = requests.get(url, timeout=10)
-    res.raise_for_status()
-    prices = res.json().get('prices', [])
-    return [[p[0], p[1], p[1], p[1], p[1], 0] for p in prices[-50:]]
+    # Respaldo de alta disponibilidad sin límite estricto de peticiones (CryptoCompare)
+    coin = simbolo.replace("USDT", "")
+    url_alt = f"https://min-api.cryptocompare.com/data/v2/histoour?fsym={coin}&tsym=USDT&limit=50"
+    res_alt = requests.get(url_alt, timeout=10)
+    res_alt.raise_for_status()
+    data_alt = res_alt.json().get('Data', {}).get('Data', [])
+    
+    return [[item['time'] * 1000, item['open'], item['high'], item['low'], item['close'], item['volumeto']] for item in data_alt]
 
 def analizar_mercado(simbolo):
     try:
@@ -112,7 +100,6 @@ def ejecutar_compra_testnet(simbolo, asignacion_usdt):
         exchange = obtener_exchange_privado()
         simbolo_ccxt = simbolo.replace("USDT", "/USDT")
         
-        # Ejecuta la compra a mercado utilizando el saldo en USDT
         orden = exchange.create_market_buy_order_requires_price(simbolo_ccxt, asignacion_usdt)
         print(f"✅ ORDEN EJECUTADA EN TESTNET: {orden['id']} | {simbolo_ccxt}")
         
