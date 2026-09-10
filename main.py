@@ -9,22 +9,28 @@ SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
-# Configuración de Binance (evitando bloqueos de IP en llamadas de datos públicos)
-exchange = ccxt.binance({
-    'apiKey': os.environ.get("BINANCE_TESTNET_KEY", ""),
-    'secret': os.environ.get("BINANCE_TESTNET_SECRET", ""),
+# Cliente PÚBLICO para lectura de mercado (sin credenciales, evita error 451)
+exchange_publico = ccxt.binance({
     'enableRateLimit': True,
     'options': {
-        'fetchBalance': False,
+        'defaultType': 'spot',
         'adjustForTimeDifference': True,
-    },
-    'urls': {
-        'api': {
-            'public': 'https://api.binance.com/api/v3',
-            'private': 'https://testnet.binance.vision/api/v3',
-        }
     }
 })
+
+# Cliente PRIVADO solo para ejecución en Testnet
+def obtener_exchange_privado():
+    exchange = ccxt.binance({
+        'apiKey': os.environ.get("BINANCE_TESTNET_KEY", ""),
+        'secret': os.environ.get("BINANCE_TESTNET_SECRET", ""),
+        'enableRateLimit': True,
+        'options': {
+            'defaultType': 'spot',
+            'adjustForTimeDifference': True,
+        }
+    })
+    exchange.set_sandbox_mode(True)
+    return exchange
 
 ACTIVOS = ['BTC/USDT', 'ETH/USDT', 'SOL/USDT']
 RESERVA_SERVIDORES = 20.0
@@ -42,7 +48,8 @@ def obtener_capital_operable():
 
 def analizar_mercado(simbolo):
     try:
-        ohlcv = exchange.fetch_ohlcv(simbolo, timeframe='1h', limit=50)
+        # Usa el cliente público libre de restricciones
+        ohlcv = exchange_publico.fetch_ohlcv(simbolo, timeframe='1h', limit=50)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
         # Estrategia de análisis básica
