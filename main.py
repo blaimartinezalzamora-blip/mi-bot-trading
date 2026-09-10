@@ -80,7 +80,3 @@ def iniciar_bot():
 
 if __name__ == "__main__":
     iniciar_bot()
-        print("🔍 No se encontraron entradas de alta probabilidad.")
-
-if __name__ == "__main__":
-    iniciar_bot()
