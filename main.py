@@ -40,9 +40,9 @@ def obtener_capital_operable():
         return 0.0
 
 def obtener_velas_directas(simbolo):
-    # Intenta Binance US primero (sin geobloqueo en EE. UU.)
+    # Petición a Binance US con intervalo de 15 minutos (15m)
     try:
-        url = f"https://api.binance.us/api/v3/klines?symbol={simbolo}&interval=1h&limit=50"
+        url = f"https://api.binance.us/api/v3/klines?symbol={simbolo}&interval=15m&limit=50"
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
             data = res.json()
@@ -50,9 +50,9 @@ def obtener_velas_directas(simbolo):
     except Exception:
         pass
 
-    # Respaldo de alta disponibilidad sin límite estricto de peticiones (CryptoCompare)
+    # Respaldo de alta disponibilidad (CryptoCompare en minutos)
     coin = simbolo.replace("USDT", "")
-    url_alt = f"https://min-api.cryptocompare.com/data/v2/histoour?fsym={coin}&tsym=USDT&limit=50"
+    url_alt = f"https://min-api.cryptocompare.com/data/v2/histominute?fsym={coin}&tsym=USDT&limit=50&aggregate=15"
     res_alt = requests.get(url_alt, timeout=10)
     res_alt.raise_for_status()
     data_alt = res_alt.json().get('Data', {}).get('Data', [])
@@ -111,7 +111,7 @@ def ejecutar_compra_testnet(simbolo, asignacion_usdt):
         print(f"⚠️ Error al ejecutar orden en Testnet para {simbolo}: {e}")
 
 def iniciar_bot():
-    print("🤖 Bot de Trading Autosostenible Iniciado...")
+    print("🤖 Bot de Trading Autosostenible Iniciado (Timeframe: 15m)...")
     capital = obtener_capital_operable()
     print(f"💰 Capital operable: {capital:.2f} €")
     
