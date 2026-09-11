@@ -1,8 +1,10 @@
 import os
+import time
+import hmac
+import hashlib
 import requests
 import pandas as pd
 from supabase import create_client
-import ccxt
 
 # Configuración de Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -10,19 +12,9 @@ SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
-# Cliente PRIVADO para ejecución en Binance Testnet
-def obtener_exchange_privado():
-    exchange = ccxt.binance({
-        'apiKey': os.environ.get("BINANCE_TESTNET_KEY", ""),
-        'secret': os.environ.get("BINANCE_TESTNET_SECRET", ""),
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'spot',
-            'adjustForTimeDifference': True,
-        }
-    })
-    exchange.set_sandbox_mode(True)
-    return exchange
+# Credenciales Binance Testnet
+BINANCE_API_KEY = os.environ.get("BINANCE_TESTNET_KEY", "")
+BINANCE_SECRET = os.environ.get("BINANCE_TESTNET_SECRET", "")
 
 ACTIVOS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 RESERVA_SERVIDORES = 20.0
@@ -40,7 +32,6 @@ def obtener_capital_operable():
         return 0.0
 
 def obtener_velas_directas(simbolo):
-    # Petición a Binance US con intervalo de 15 minutos (15m)
     try:
         url = f"https://api.binance.us/api/v3/klines?symbol={simbolo}&interval=15m&limit=50"
         res = requests.get(url, timeout=10)
@@ -50,7 +41,6 @@ def obtener_velas_directas(simbolo):
     except Exception:
         pass
 
-    # Respaldo de alta disponibilidad (CryptoCompare en minutos)
     coin = simbolo.replace("USDT", "")
     url_alt = f"https://min-api.cryptocompare.com/data/v2/histominute?fsym={coin}&tsym=USDT&limit=50&aggregate=15"
     res_alt = requests.get(url_alt, timeout=10)
@@ -97,23 +87,46 @@ def registrar_orden_supabase(simbolo, tipo, monto_usdt, precio, cantidad):
 
 def ejecutar_compra_testnet(simbolo, asignacion_usdt):
     try:
-        exchange = obtener_exchange_privado()
-        simbolo_ccxt = simbolo.replace("USDT", "/USDT")
+        url = "https://testnet.binance.vision/api/v3/order"
+        timestamp = int(time.time() * 1000)
         
-        # Sintaxis estándar de CCXT para compra a mercado especificando monto en USDT
-        orden = exchange.create_market_buy_order(
-            symbol=simbolo_ccxt,
-            amount=None,
-            params={'quoteOrderQty': asignacion_usdt}
-        )
-        print(f"✅ ORDEN EJECUTADA EN TESTNET: {orden.get('id', 'N/A')} | {simbolo_ccxt}")
+        params = {
+            'symbol': simbolo,
+            'side': 'BUY',
+            'type': 'MARKET',
+            'quoteOrderQty': f"{asignacion_usdt:.2f}",
+            'timestamp': timestamp
+        }
         
-        precio_ejecucion = orden.get('price', 0.0)
-        cantidad = orden.get('filled', 0.0)
+        query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
+        signature = hmac.new(BINANCE_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
         
-        registrar_orden_supabase(simbolo, 'BUY', asignacion_usdt, precio_ejecucion, cantidad)
+        headers = {
+            'X-MBX-APIKEY': BINANCE_API_KEY,
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
+        }
+        
+        full_url = f"{url}?{query_string}&signature={signature}"
+        res = requests.post(full_url, headers=headers, timeout=10)
+        
+        if res.status_code == 200:
+            data = res.json()
+            order_id = data.get('orderId', 'N/A')
+            print(f"✅ ORDEN EJECUTADA EN TESTNET: {order_id} | {simbolo}")
+            
+            # Obtener precio y cantidad ejecutados
+            fills = data.get('fills', [])
+            precio = float(fills[0]['price']) if fills else 0.0
+            cantidad = float(data.get('executedQty', 0.0))
+            
+            registrar_orden_supabase(simbolo, 'BUY', asignacion_usdt, precio, cantidad)
+        else:
+            print(f"⚠️ Error al ejecutar orden directa HTTP {res.status_code}: {res.text}")
+            # Si la Testnet restringe por geobloqueo directo, registramos la simulación localmente
+            registrar_orden_supabase(simbolo, 'BUY (Simulado)', asignacion_usdt, 0.0, 0.0)
+            
     except Exception as e:
-        print(f"⚠️ Error al ejecutar orden en Testnet para {simbolo}: {e}")
+        print(f"⚠️ Excepción al ejecutar orden en Testnet para {simbolo}: {e}")
 
 def iniciar_bot():
     print("🤖 Bot de Trading Autosostenible Iniciado (Timeframe: 15m)...")
