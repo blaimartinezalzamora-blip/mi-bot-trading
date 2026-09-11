@@ -1,7 +1,5 @@
 import os
 import time
-import hmac
-import hashlib
 import requests
 import pandas as pd
 from supabase import create_client
@@ -12,13 +10,9 @@ SUPABASE_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
 
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY) if SUPABASE_URL else None
 
-# Credenciales Binance Testnet
-BINANCE_API_KEY = os.environ.get("BINANCE_TESTNET_KEY", "")
-BINANCE_SECRET = os.environ.get("BINANCE_TESTNET_SECRET", "")
-
 ACTIVOS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 RESERVA_SERVIDORES = 20.0
-PORCENTAJE_POR_OPERACION = 0.10  # 10% del capital disponible por entrada
+PORCENTAJE_POR_OPERACION = 0.10
 
 def obtener_capital_operable():
     if not supabase:
@@ -62,12 +56,31 @@ def analizar_mercado(simbolo):
         penultima_corta = df['sma_short'].iloc[-2]
         penultima_larga = df['sma_long'].iloc[-2]
         
+        precio_actual = df['close'].iloc[-1]
+
+        # Cruce Dorado: Compra
         if penultima_corta <= penultima_larga and ultima_corta > ultima_larga:
-            return "BUY", df['close'].iloc[-1]
-        return "HOLD", df['close'].iloc[-1]
+            return "BUY", precio_actual
+        # Cruce Muerte: Venta
+        elif penultima_corta >= penultima_larga and ultima_corta < ultima_larga:
+            return "SELL", precio_actual
+            
+        return "HOLD", precio_actual
     except Exception as e:
         print(f"Error analizando {simbolo}: {e}")
         return "ERROR", 0.0
+
+def posicion_abierta(simbolo):
+    """Comprueba si tenemos una compra previa no vendida en Supabase."""
+    if not supabase:
+        return None
+    try:
+        res = supabase.table('ordenes').select('*').eq('simbolo', simbolo).order('id', desc=True).limit(1).execute()
+        if res.data and res.data[0]['tipo'].startswith('BUY'):
+            return res.data[0]
+    except Exception as e:
+        print(f"Error consultando posición en Supabase: {e}")
+    return None
 
 def registrar_orden_supabase(simbolo, tipo, monto_usdt, precio, cantidad):
     if not supabase:
@@ -81,52 +94,36 @@ def registrar_orden_supabase(simbolo, tipo, monto_usdt, precio, cantidad):
             'cantidad': cantidad
         }
         supabase.table('ordenes').insert(data).execute()
-        print(f"📊 Orden registrada exitosamente en Supabase para {simbolo}")
+        print(f"📊 Orden {tipo} registrada exitosamente en Supabase para {simbolo} | Precio: {precio}")
     except Exception as e:
         print(f"Error al registrar orden en Supabase: {e}")
 
-def ejecutar_compra_testnet(simbolo, asignacion_usdt):
-    try:
-        url = "https://testnet.binance.vision/api/v3/order"
-        timestamp = int(time.time() * 1000)
-        
-        params = {
-            'symbol': simbolo,
-            'side': 'BUY',
-            'type': 'MARKET',
-            'quoteOrderQty': f"{asignacion_usdt:.2f}",
-            'timestamp': timestamp
-        }
-        
-        query_string = '&'.join([f"{k}={v}" for k, v in params.items()])
-        signature = hmac.new(BINANCE_SECRET.encode('utf-8'), query_string.encode('utf-8'), hashlib.sha256).hexdigest()
-        
-        headers = {
-            'X-MBX-APIKEY': BINANCE_API_KEY,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-        }
-        
-        full_url = f"{url}?{query_string}&signature={signature}"
-        res = requests.post(full_url, headers=headers, timeout=10)
-        
-        if res.status_code == 200:
-            data = res.json()
-            order_id = data.get('orderId', 'N/A')
-            print(f"✅ ORDEN EJECUTADA EN TESTNET: {order_id} | {simbolo}")
-            
-            # Obtener precio y cantidad ejecutados
-            fills = data.get('fills', [])
-            precio = float(fills[0]['price']) if fills else 0.0
-            cantidad = float(data.get('executedQty', 0.0))
-            
-            registrar_orden_supabase(simbolo, 'BUY', asignacion_usdt, precio, cantidad)
-        else:
-            print(f"⚠️ Error al ejecutar orden directa HTTP {res.status_code}: {res.text}")
-            # Si la Testnet restringe por geobloqueo directo, registramos la simulación localmente
-            registrar_orden_supabase(simbolo, 'BUY (Simulado)', asignacion_usdt, 0.0, 0.0)
-            
-    except Exception as e:
-        print(f"⚠️ Excepción al ejecutar orden en Testnet para {simbolo}: {e}")
+def procesar_compra(simbolo, asignacion_usdt, precio_actual):
+    if posicion_abierta(simbolo):
+        print(f"ℹ️ Ya existe una posición abierta en {simbolo}. No se acumulan compras.")
+        return
+
+    cantidad = asignacion_usdt / precio_actual if precio_actual > 0 else 0.0
+    registrar_orden_supabase(simbolo, 'BUY (Simulado)', asignacion_usdt, precio_actual, cantidad)
+
+def procesar_venta(simbolo, precio_actual):
+    compra = posicion_abierta(simbolo)
+    if not compra:
+        return
+
+    precio_compra = float(compra.get('precio_ejecucion', 0.0))
+    cantidad = float(compra.get('cantidad', 0.0))
+    monto_invertido = float(compra.get('monto_usdt', 0.0))
+    
+    monto_venta = cantidad * precio_actual
+    pnl = monto_venta - monto_invertido
+    porcentaje_pnl = ((precio_actual - precio_compra) / precio_compra * 100) if precio_compra > 0 else 0.0
+
+    print(f"📉 SEÑAL DE VENTA EN {simbolo}:")
+    print(f"   - Precio Entrada: {precio_compra:.2f} | Precio Salida: {precio_actual:.2f}")
+    print(f"   - Resultado (PnL): {pnl:+.2f} USDT ({porcentaje_pnl:+.2f}%)")
+
+    registrar_orden_supabase(simbolo, f"SELL ({pnl:+.2f} USDT)", monto_venta, precio_actual, cantidad)
 
 def iniciar_bot():
     print("🤖 Bot de Trading Autosostenible Iniciado (Timeframe: 15m)...")
@@ -134,21 +131,18 @@ def iniciar_bot():
     print(f"💰 Capital operable: {capital:.2f} €")
     
     if capital <= 0:
-        print("⚠️ No hay capital operable disponible para operar.")
+        print("⚠️ No hay capital operable disponible.")
         return
 
     monto_por_orden = capital * PORCENTAJE_POR_OPERACION
-    entradas_encontradas = 0
 
     for simbolo in ACTIVOS:
         senal, precio_actual = analizar_mercado(simbolo)
         if senal == "BUY":
-            print(f"🚀 Señal de COMPRA detectada en {simbolo} (Precio: {precio_actual})")
-            entradas_encontradas += 1
-            ejecutar_compra_testnet(simbolo, monto_por_orden)
-            
-    if entradas_encontradas == 0:
-        print("🔍 No se encontraron entradas de alta probabilidad.")
+            print(f"🚀 Señal de COMPRA en {simbolo} (Precio: {precio_actual})")
+            procesar_compra(simbolo, monto_por_orden, precio_actual)
+        elif senal == "SELL":
+            procesar_venta(simbolo, precio_actual)
 
 if __name__ == "__main__":
     iniciar_bot()
