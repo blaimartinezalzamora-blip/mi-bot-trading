@@ -13,9 +13,9 @@ ACTIVOS = ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
 RESERVA_SERVIDORES = 20.0
 PORCENTAJE_POR_OPERACION = 0.10
 
-# Parámetros de Gestión de Riesgo
-STOP_LOSS_PCT = 0.015   # 1.5% de pérdida máxima
-TAKE_PROFIT_PCT = 0.030  # 3.0% de beneficio objetivo
+# Parámetros de Riesgo Optimizados (Ratio R/R 1:2.6)
+STOP_LOSS_PCT = 0.015   # 1.5%
+TAKE_PROFIT_PCT = 0.040  # 4.0%
 
 def obtener_capital_operable():
     if not supabase:
@@ -30,7 +30,7 @@ def obtener_capital_operable():
 
 def obtener_velas_directas(simbolo):
     try:
-        url = f"https://api.binance.us/api/v3/klines?symbol={simbolo}&interval=15m&limit=50"
+        url = f"https://api.binance.us/api/v3/klines?symbol={simbolo}&interval=15m&limit=60"
         res = requests.get(url, timeout=10)
         if res.status_code == 200:
             data = res.json()
@@ -39,7 +39,7 @@ def obtener_velas_directas(simbolo):
         pass
 
     coin = simbolo.replace("USDT", "")
-    url_alt = f"https://min-api.cryptocompare.com/data/v2/histominute?fsym={coin}&tsym=USDT&limit=50&aggregate=15"
+    url_alt = f"https://min-api.cryptocompare.com/data/v2/histominute?fsym={coin}&tsym=USDT&limit=60&aggregate=15"
     res_alt = requests.get(url_alt, timeout=10)
     res_alt.raise_for_status()
     data_alt = res_alt.json().get('Data', {}).get('Data', [])
@@ -58,11 +58,9 @@ def analizar_mercado(simbolo):
         ohlcv = obtener_velas_directas(simbolo)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        # Medias Móviles
-        df['sma_short'] = df['close'].rolling(window=9).mean()
-        df['sma_long'] = df['close'].rolling(window=21).mean()
-        
-        # Indicador RSI para contexto
+        # Medias 12/50 para evitar entradas falsas
+        df['sma_short'] = df['close'].rolling(window=12).mean()
+        df['sma_long'] = df['close'].rolling(window=50).mean()
         df['rsi'] = calcular_rsi(df)
         
         precio_actual = df['close'].iloc[-1]
@@ -74,10 +72,8 @@ def analizar_mercado(simbolo):
         penultima_corta = df['sma_short'].iloc[-2]
         penultima_larga = df['sma_long'].iloc[-2]
 
-        # Cruce Dorado (Compra)
         if penultima_corta <= penultima_larga and ultima_corta > ultima_larga:
             return "BUY", precio_actual, rsi_actual, volumen_actual
-        # Cruce Muerte (Venta)
         elif penultima_corta >= penultima_larga and ultima_corta < ultima_larga:
             return "SELL", precio_actual, rsi_actual, volumen_actual
             
@@ -114,7 +110,6 @@ def registrar_orden_supabase(simbolo, tipo, monto_usdt, precio, cantidad):
         print(f"Error al registrar orden en Supabase: {e}")
 
 def evaluar_posiciones_abiertas(simbolo, precio_actual):
-    """Comprueba si la posición abierta tocó el Stop Loss o Take Profit."""
     compra = posicion_abierta(simbolo)
     if not compra:
         return False
@@ -125,15 +120,13 @@ def evaluar_posiciones_abiertas(simbolo, precio_actual):
 
     variacion = (precio_actual - precio_compra) / precio_compra
 
-    # Control de Stop Loss
     if variacion <= -STOP_LOSS_PCT:
-        print(f"🛑 STOP LOSS ACTIVADO en {simbolo} (Caída del {variacion*100:.2f}%)")
+        print(f"🛑 STOP LOSS ACTIVADO en {simbolo} ({variacion*100:.2f}%)")
         procesar_venta(simbolo, precio_actual, motivo="STOP_LOSS")
         return True
 
-    # Control de Take Profit
     if variacion >= TAKE_PROFIT_PCT:
-        print(f"🎯 TAKE PROFIT ALCANZADO en {simbolo} (Subida del {variacion*100:.2f}%)")
+        print(f"🎯 TAKE PROFIT ALCANZADO en {simbolo} ({variacion*100:.2f}%)")
         procesar_venta(simbolo, precio_actual, motivo="TAKE_PROFIT")
         return True
 
@@ -141,16 +134,16 @@ def evaluar_posiciones_abiertas(simbolo, precio_actual):
 
 def procesar_compra(simbolo, asignacion_usdt, precio_actual, rsi, volumen):
     if posicion_abierta(simbolo):
-        print(f"ℹ️ Ya existe una posición abierta en {simbolo}. No se acumulan compras.")
+        print(f"ℹ️ Ya existe una posición abierta en {simbolo}.")
         return
 
-    # Filtro básico de seguridad: no comprar si el RSI indica sobrecompra extrema (> 70)
-    if rsi > 70:
-        print(f"⚠️ Compra descartada en {simbolo}: RSI demasiado alto ({rsi:.1f})")
+    # Filtro de entradas con RSI entre 45 y 65
+    if not (45 <= rsi <= 65):
+        print(f"⚠️ Compra filtrada en {simbolo}: RSI ({rsi:.1f}) fuera del rango de impulso (45-65)")
         return
 
     cantidad = asignacion_usdt / precio_actual if precio_actual > 0 else 0.0
-    print(f"📈 RSI al entrar: {rsi:.1f} | Vol: {volumen:.1f}")
+    print(f"📈 Entrada confirmada | RSI: {rsi:.1f} | Vol: {volumen:.1f}")
     registrar_orden_supabase(simbolo, 'BUY (Simulado)', asignacion_usdt, precio_actual, cantidad)
 
 def procesar_venta(simbolo, precio_actual, motivo="CRUCE"):
@@ -166,14 +159,11 @@ def procesar_venta(simbolo, precio_actual, motivo="CRUCE"):
     pnl = monto_venta - monto_invertido
     porcentaje_pnl = ((precio_actual - precio_compra) / precio_compra * 100) if precio_compra > 0 else 0.0
 
-    print(f"📉 VENTA EJECUTADA ({motivo}) EN {simbolo}:")
-    print(f"   - Entrada: {precio_compra:.2f} | Salida: {precio_actual:.2f}")
-    print(f"   - PnL: {pnl:+.2f} USDT ({porcentaje_pnl:+.2f}%)")
-
+    print(f"📉 VENTA EN {simbolo} ({motivo}): Entrada: {precio_compra:.2f} | Salida: {precio_actual:.2f} | PnL: {pnl:+.2f} USDT")
     registrar_orden_supabase(simbolo, f"SELL-{motivo} ({pnl:+.2f} USDT)", monto_venta, precio_actual, cantidad)
 
 def iniciar_bot():
-    print("🤖 Bot de Trading Autosostenible Iniciado (Timeframe: 15m + SL/TP)...")
+    print("🤖 Bot de Trading Autosostenible Iniciado (Estrategia 12/50 + RSI)...")
     capital = obtener_capital_operable()
     print(f"💰 Capital operable: {capital:.2f} €")
     
@@ -185,14 +175,11 @@ def iniciar_bot():
 
     for simbolo in ACTIVOS:
         senal, precio_actual, rsi_actual, volumen_actual = analizar_mercado(simbolo)
-        
-        # 1. Primero evalúa si hay que cerrar posición por SL/TP
         posicion_cerrada = evaluar_posiciones_abiertas(simbolo, precio_actual)
         
-        # 2. Si no se cerró por SL/TP, evalúa las señales normales
         if not posicion_cerrada:
             if senal == "BUY":
-                print(f"🚀 Señal de COMPRA en {simbolo} (Precio: {precio_actual:.2f})")
+                print(f"🚀 Señal de COMPRA detectada en {simbolo} (Precio: {precio_actual:.2f})")
                 procesar_compra(simbolo, monto_por_orden, precio_actual, rsi_actual, volumen_actual)
             elif senal == "SELL":
                 procesar_venta(simbolo, precio_actual, motivo="CRUCE")
